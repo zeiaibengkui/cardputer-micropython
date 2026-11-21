@@ -110,7 +110,7 @@ def play(autostart=False, max_seconds=None):
             "MIDI ready",
             (
                 midi_song.TITLE[:28],
-                "Volume 7 / 10",
+                "Volume 1 / 10",
                 "P start/pause  U/I volume",
                 "G0 exits",
             ),
@@ -122,7 +122,7 @@ def play(autostart=False, max_seconds=None):
     view = memoryview(tone)
     offset = 0
     playing = autostart
-    volume = 7
+    volume = 1
     current_voices = ()
     current_periods = ()
     current_halves = ()
