@@ -1,4 +1,4 @@
-"""Play a preprocessed monophonic MIDI frequency timeline."""
+"""Play a preprocessed three-voice MIDI frequency timeline."""
 
 import array
 import binascii
@@ -11,6 +11,7 @@ import midi_song
 
 
 SR = midi_song.SAMPLE_RATE
+BLOCK_FRAMES = 256
 STOP_BUTTON = machine.Pin(0, machine.Pin.IN, machine.Pin.PULL_UP)
 
 
@@ -21,6 +22,15 @@ class Keyboard:
         self.i2c.writeto_mem(0x34, 0x1E, b"\xff")
         self.i2c.writeto_mem(0x34, 0x1F, b"\x00")
         self.i2c.writeto_mem(0x34, 0x01, b"\x91")
+        try:
+            count = self.i2c.readfrom_mem(0x34, 0x03, 1)[0] & 0x0F
+            for _ in range(count):
+                self.i2c.readfrom_mem(0x34, 0x04, 1)
+            status = self.i2c.readfrom_mem(0x34, 0x02, 1)[0]
+            if status:
+                self.i2c.writeto_mem(0x34, 0x02, bytes((status,)))
+        except OSError:
+            pass
 
     def poll(self):
         toggle_play = False
@@ -80,7 +90,7 @@ def play(autostart=False, max_seconds=None):
     keyboard = Keyboard(i2c)
     _init_codec(i2c)
     audio = machine.I2S(
-        0,
+        1,
         sck=machine.Pin(41),
         ws=machine.Pin(43),
         sd=machine.Pin(42),
@@ -108,13 +118,16 @@ def play(autostart=False, max_seconds=None):
     except Exception:
         pass
 
-    tone = array.array("h", [0] * 2048)
+    tone = array.array("h", [0] * (BLOCK_FRAMES * 2))
     view = memoryview(tone)
     offset = 0
     playing = autostart
     volume = 7
-    current_cycles = 0
-    current_rest = 0
+    current_voices = ()
+    current_periods = ()
+    current_halves = ()
+    current_frames = 0
+    phases = [0, 0, 0]
     active_ms = 0
     last_tick = time.ticks_ms()
     stopped_by_user = False
@@ -122,7 +135,7 @@ def play(autostart=False, max_seconds=None):
     print("P: start/pause, U/I: volume up/down, G0: exit")
 
     try:
-        while offset + 4 <= len(data) or current_cycles or current_rest:
+        while offset + 8 <= len(data) or current_frames:
             now = time.ticks_ms()
             if playing:
                 active_ms += time.ticks_diff(now, last_tick)
@@ -141,12 +154,6 @@ def play(autostart=False, max_seconds=None):
                 volume = min(10, max(0, volume + volume_delta))
                 if volume != old_volume:
                     print("Volume", volume, "/ 10")
-                    if current_cycles:
-                        half = current_period // 2
-                        for sample in range(current_period):
-                            value = volume * 1000 if sample < half else -volume * 1000
-                            tone[2 * sample] = value
-                            tone[2 * sample + 1] = value
                     if screen:
                         screen.status(
                             "MIDI playing" if playing else "MIDI paused",
@@ -176,38 +183,41 @@ def play(autostart=False, max_seconds=None):
                 time.sleep_ms(20)
                 continue
 
-            if current_rest:
-                step = min(current_rest, 20)
-                time.sleep_ms(step)
-                current_rest -= step
+            if current_frames:
+                frames = min(BLOCK_FRAMES, current_frames)
+                if current_voices:
+                    amplitude = volume * 1000 // len(current_voices)
+                    for sample in range(frames):
+                        mixed = 0
+                        for voice in range(len(current_voices)):
+                            if phases[voice] < current_halves[voice]:
+                                mixed += amplitude
+                            else:
+                                mixed -= amplitude
+                            phases[voice] += 1
+                            if phases[voice] >= current_periods[voice]:
+                                phases[voice] = 0
+                        tone[2 * sample] = mixed
+                        tone[2 * sample + 1] = mixed
+                    audio.write(view[: frames * 2])
+                else:
+                    time.sleep_ms(max(1, frames * 1000 // SR))
+                current_frames -= frames
                 continue
 
-            if current_cycles:
-                count = min(current_cycles, 4)
-                cycle_buffer = view[:current_period * 2]
-                for _ in range(count):
-                    audio.write(cycle_buffer)
-                current_cycles -= count
-                continue
-
-            frequency_hz, duration_ms = struct.unpack_from(">HH", data, offset)
-            offset += 4
+            f1, f2, f3, duration_ms = struct.unpack_from(">HHHH", data, offset)
+            offset += 8
             if duration_ms == 0:
                 continue
-
-            if frequency_hz == 0:
-                current_rest = duration_ms
-                continue
-
-            current_period = max(2, SR // frequency_hz)
-            half = current_period // 2
-            for sample in range(current_period):
-                value = volume * 1000 if sample < half else -volume * 1000
-                tone[2 * sample] = value
-                tone[2 * sample + 1] = value
-            current_cycles = max(
-                1, duration_ms * SR // (current_period * 1000)
+            current_voices = tuple(
+                frequency_hz for frequency_hz in (f1, f2, f3) if frequency_hz
             )
+            current_periods = tuple(
+                max(2, SR // frequency_hz) for frequency_hz in current_voices
+            )
+            current_halves = tuple(period // 2 for period in current_periods)
+            phases = [0] * len(current_voices)
+            current_frames = max(1, duration_ms * SR // 1000)
     finally:
         time.sleep_ms(80)
         audio.deinit()

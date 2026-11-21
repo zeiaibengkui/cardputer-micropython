@@ -55,15 +55,14 @@ Controls:
 ## MIDI preprocessing
 
 `midi_preprocess.py` reads a Standard MIDI file, chooses the track with the
-most notes, collapses polyphony to the highest active pitch, converts notes
-to mono frequency segments, and emits a compact base64-encoded
-`(frequency_hz, duration_ms)` timeline.
+most notes, retains up to three simultaneous pitches, and emits a compact
+base64-encoded `(voice1_hz, voice2_hz, voice3_hz, duration_ms)` timeline.
 
 ```sh
 .venv/bin/python midi_preprocess.py input.mid --output midi_song.py
 ```
 
-The default output has 891 records and lasts about 123 seconds. The device
+The included song has 204 records and lasts about 88 seconds. The device
 does not parse MIDI at runtime.
 
 ## Hardware test
